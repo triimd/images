@@ -5,9 +5,9 @@ A utility image for initializing and bootstrapping environments.
 ## Features
 
 - Lightweight Alpine-based image
-- Common initialization tools included
-- Customizable bootstrap scripts
-- Environment variable substitution support
+- Runs as a non-root `bootstrap` user by default
+- Customizable bootstrap scripts loaded from `/config/bootstrap.sh`
+- Includes `envsubst` via `gettext` package
 
 ## Included Tools
 
@@ -22,14 +22,14 @@ A utility image for initializing and bootstrapping environments.
 ### Basic Usage
 
 ```bash
-docker run ghcr.io/triimd/bootstrap:latest echo "Hello from bootstrap"
+docker run <registry>/<namespace>/bootstrap:latest echo "Hello from bootstrap"
 ```
 
 ### With Custom Bootstrap Script
 
 ```bash
 docker run -v ./bootstrap.sh:/config/bootstrap.sh \
-  ghcr.io/triimd/bootstrap:latest
+  <registry>/<namespace>/bootstrap:latest
 ```
 
 ### Example Bootstrap Script
@@ -47,7 +47,7 @@ curl -o /workspace/config.yml https://example.com/config.yml
 envsubst < /workspace/config.yml > /workspace/config.processed.yml
 
 # Clone repositories
-git clone https://github.com/example/repo.git /workspace/repo
+git clone https://git.example.com/example/repo.git /workspace/repo
 
 echo "Bootstrap complete!"
 ```

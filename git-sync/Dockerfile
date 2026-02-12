@@ -1,62 +1,29 @@
-# Git sync utility image
-# Synchronizes git repositories at regular intervals
+FROM python:3.13-alpine3.21
 
-FROM alpine:3.19
+ARG IMAGE_SOURCE_URL=https://code.example.com/triimd/images
 
-LABEL org.opencontainers.image.source=https://github.com/triimd/images
-LABEL org.opencontainers.image.description="Git sync utility for synchronizing repositories"
+LABEL org.opencontainers.image.source=${IMAGE_SOURCE_URL}
+LABEL org.opencontainers.image.description="Webhook-driven Git mirror service"
 LABEL org.opencontainers.image.licenses=MIT
 
-# Install git and required tools
-RUN apk add --no-cache \
-    git \
-    openssh-client \
-    bash \
-    curl
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    GIT_SYNC_DATA_DIR=/var/lib/git-sync \
+    PORT=8080
 
-# Create sync script
-COPY <<'EOF' /usr/local/bin/git-sync
-#!/bin/bash
-set -e
+COPY setup-image.sh /tmp/setup-image.sh
+RUN sh /tmp/setup-image.sh && rm -f /tmp/setup-image.sh
 
-SOURCE_REPO="${SOURCE_REPO:-}"
-TARGET_REPO="${TARGET_REPO:-}"
-SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
-BRANCH="${BRANCH:-main}"
+WORKDIR /app
 
-if [ -z "$SOURCE_REPO" ] || [ -z "$TARGET_REPO" ]; then
-    echo "ERROR: SOURCE_REPO and TARGET_REPO environment variables must be set"
-    exit 1
-fi
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-echo "Git Sync started"
-echo "Source: $SOURCE_REPO"
-echo "Target: $TARGET_REPO"
-echo "Branch: $BRANCH"
-echo "Interval: ${SYNC_INTERVAL}s"
+COPY git-sync.py /app/git-sync.py
+RUN chmod +x /app/git-sync.py
 
-while true; do
-    echo "$(date): Starting sync..."
-    
-    # Clone or update source
-    if [ ! -d /tmp/source ]; then
-        git clone "$SOURCE_REPO" /tmp/source
-    else
-        cd /tmp/source && git fetch origin && git reset --hard origin/$BRANCH
-    fi
-    
-    # Push to target
-    cd /tmp/source
-    git remote add target "$TARGET_REPO" 2>/dev/null || git remote set-url target "$TARGET_REPO"
-    git push target "$BRANCH" --force
-    
-    echo "$(date): Sync completed"
-    sleep "$SYNC_INTERVAL"
-done
-EOF
+USER git-sync
 
-RUN chmod +x /usr/local/bin/git-sync
+EXPOSE 8080
 
-WORKDIR /workspace
-
-CMD ["/usr/local/bin/git-sync"]
+CMD ["python", "/app/git-sync.py"]

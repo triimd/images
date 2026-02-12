@@ -1,0 +1,16 @@
+export PATH="$HOME/.local/bin:$PATH"
+
+if [ -d "$HOME/.local/share/pnpm" ]; then
+  export PNPM_HOME="$HOME/.local/share/pnpm"
+  case ":$PATH:" in
+    *":$PNPM_HOME:"*) ;;
+    *) export PATH="$PNPM_HOME:$PATH" ;;
+  esac
+fi
+
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$NVM_DIR/nvm.sh"
+fi
+
+alias tmux='tmux -f "$XDG_CONFIG_HOME/tmux/tmux.conf"'

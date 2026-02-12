@@ -1,48 +1,18 @@
-# Bootstrap image
-# Used for initializing and setting up environments
+FROM alpine:3.21
 
-FROM alpine:3.19
+ARG IMAGE_SOURCE_URL=https://code.example.com/triimd/images
 
-LABEL org.opencontainers.image.source=https://github.com/triimd/images
+LABEL org.opencontainers.image.source=${IMAGE_SOURCE_URL}
 LABEL org.opencontainers.image.description="Bootstrap image for environment initialization"
 LABEL org.opencontainers.image.licenses=MIT
 
-# Install common bootstrap tools
-RUN apk add --no-cache \
-    bash \
-    curl \
-    wget \
-    git \
-    openssh-client \
-    ca-certificates \
-    jq \
-    yq \
-    envsubst \
-    gettext
+COPY setup-image.sh /tmp/setup-image.sh
+RUN sh /tmp/setup-image.sh && rm -f /tmp/setup-image.sh
 
-# Create bootstrap script
-COPY <<'EOF' /usr/local/bin/bootstrap
-#!/bin/bash
-set -e
-
-echo "Bootstrap starting..."
-
-# Source any bootstrap configuration if provided
-if [ -f "/config/bootstrap.sh" ]; then
-    echo "Running custom bootstrap configuration..."
-    source /config/bootstrap.sh
-fi
-
-# Run any command passed as arguments
-if [ $# -gt 0 ]; then
-    echo "Executing: $@"
-    exec "$@"
-else
-    echo "Bootstrap complete. No additional commands to execute."
-fi
-EOF
-
+COPY bootstrap.sh /usr/local/bin/bootstrap
 RUN chmod +x /usr/local/bin/bootstrap
+
+USER bootstrap
 
 WORKDIR /workspace
 
