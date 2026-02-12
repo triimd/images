@@ -1,0 +1,28 @@
+name: Build git-sync
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'git-sync/**'
+      - '.github/workflows/git-sync.yml'
+    tags:
+      - 'git-sync-v*'
+  pull_request:
+    paths:
+      - 'git-sync/**'
+      - '.github/workflows/git-sync.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_name: git-sync
+      context: ./git-sync
+      push: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write

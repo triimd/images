@@ -1,0 +1,28 @@
+name: Build git-relay
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'git-relay/**'
+      - '.github/workflows/git-relay.yml'
+    tags:
+      - 'git-relay-v*'
+  pull_request:
+    paths:
+      - 'git-relay/**'
+      - '.github/workflows/git-relay.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_name: git-relay
+      context: ./git-relay
+      push: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write
