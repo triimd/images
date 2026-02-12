@@ -18,10 +18,54 @@ COPY <<'EOF' /usr/local/bin/git-relay.js
 #!/usr/bin/env node
 
 const http = require('http');
-const { execSync } = require('child_process');
+const https = require('https');
+const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 const RELAY_URL = process.env.RELAY_URL || '';
+
+function relayWebhook(body, headers) {
+    if (!RELAY_URL) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            const url = new URL(RELAY_URL);
+            const protocol = url.protocol === 'https:' ? https : http;
+            
+            const options = {
+                hostname: url.hostname,
+                port: url.port || (url.protocol === 'https:' ? 443 : 80),
+                path: url.pathname + url.search,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body)
+                }
+            };
+
+            const req = protocol.request(options, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => {
+                    console.log(`Webhook relayed successfully (status: ${res.statusCode})`);
+                    resolve();
+                });
+            });
+
+            req.on('error', (error) => {
+                console.error('Failed to relay webhook:', error.message);
+                reject(error);
+            });
+
+            req.write(body);
+            req.end();
+        } catch (error) {
+            console.error('Invalid RELAY_URL:', error.message);
+            reject(error);
+        }
+    });
+}
 
 const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/webhook') {
@@ -31,18 +75,13 @@ const server = http.createServer((req, res) => {
             body += chunk.toString();
         });
         
-        req.on('end', () => {
+        req.on('end', async () => {
             console.log(`[${new Date().toISOString()}] Webhook received`);
             
-            if (RELAY_URL) {
-                try {
-                    execSync(`curl -X POST -H "Content-Type: application/json" -d '${body}' ${RELAY_URL}`, {
-                        stdio: 'inherit'
-                    });
-                    console.log('Webhook relayed successfully');
-                } catch (error) {
-                    console.error('Failed to relay webhook:', error.message);
-                }
+            try {
+                await relayWebhook(body, req.headers);
+            } catch (error) {
+                // Error already logged
             }
             
             res.writeHead(200, { 'Content-Type': 'application/json' });
