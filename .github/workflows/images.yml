@@ -36,11 +36,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: ./${{ inputs.image }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}:${{ steps.sha.outputs.short }}
           cache-from: type=gha,scope=${{ inputs.image }}
           cache-to: type=gha,mode=max,scope=${{ inputs.image }}
