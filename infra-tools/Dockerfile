@@ -13,8 +13,8 @@ ARG WORKSPACE_DIR=/workspace
 
 COPY setup-image.sh /tmp/setup-image.sh
 
-RUN bash /tmp/install-packages.sh && \
-    rm -f /tmp/install-packages.sh && \
+RUN bash /tmp/setup-image.sh && \
+    rm -f /tmp/setup-image.sh && \
     install -d -m 0755 "${WORKSPACE_DIR}"
 
 WORKDIR ${WORKSPACE_DIR}
