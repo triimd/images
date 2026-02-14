@@ -1,37 +1,20 @@
 #!/usr/bin/env python3
-
 import json
 import os
 import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def parse_int_env(name: str, default: int, minimum: int = 1) -> int:
-    value = os.getenv(name, str(default)).strip()
-    try:
-        parsed = int(value)
-    except ValueError:
-        return default
-    return max(parsed, minimum)
-
-
-def parse_int(value: str, default: int, minimum: int = 1) -> int:
-    try:
-        parsed = int(value.strip())
-    except (AttributeError, ValueError):
-        return default
-    return max(parsed, minimum)
+def _utc_now():
+    return datetime.utcnow().isoformat() + "Z"
 
 
 class GitSyncService:
@@ -39,13 +22,14 @@ class GitSyncService:
         self.service_id = os.getenv("SERVICE_ID", "git-sync")
         self.node_name = os.getenv("NODE_NAME", "unknown")
         self.gitea_url = os.getenv("GITEA_URL", "https://git.tm0.app").rstrip("/")
+        self.gitea_username = os.getenv("GITEA_USERNAME", "git")
+        self.gitea_token = os.getenv("GITEA_TOKEN", "")
         self.relay_url = os.getenv("RELAY_URL", "").rstrip("/")
-        self.self_endpoint = os.getenv("SELF_ENDPOINT", "").rstrip("/")
-        self.relay_registration_token = os.getenv("RELAY_REGISTRATION_TOKEN", "")
+        self.self_endpoint = os.getenv("SELF_ENDPOINT", "").strip()
 
-        self.registration_interval_seconds = parse_int_env("REGISTER_INTERVAL_SECONDS", 30)
-        self.sync_timeout_seconds = parse_int_env("SYNC_TIMEOUT_SECONDS", 120)
-        self.archive_retention_days = parse_int_env("ARCHIVE_RETENTION_DAYS", 90)
+        self.registration_interval_seconds = int(os.getenv("REGISTER_INTERVAL_SECONDS", "30"))
+        self.sync_timeout_seconds = int(os.getenv("SYNC_TIMEOUT_SECONDS", "120"))
+        self.archive_retention_days = int(os.getenv("ARCHIVE_RETENTION_DAYS", "90"))
 
         base_dir = Path(os.getenv("GIT_SYNC_DATA_DIR", "/var/lib/git-sync"))
         self.repos_path = base_dir / "repositories"
@@ -54,86 +38,85 @@ class GitSyncService:
         self.log_file = base_dir / "sync.log"
 
         self.started_at = time.time()
-        self._state_lock = threading.Lock()
+        self.state = self._load_state()
         self._stop = threading.Event()
 
         self.repos_path.mkdir(parents=True, exist_ok=True)
         self.archive_path.mkdir(parents=True, exist_ok=True)
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self.log_file.touch(exist_ok=True)
+        self.askpass_script = self._ensure_askpass_script()
 
-        self.state = self._load_state()
-
-    def _default_state(self):
+    def _load_state(self):
+        if self.state_file.exists():
+            with open(self.state_file) as f:
+                return json.load(f)
         return {
             "service_id": self.service_id,
             "node_name": self.node_name,
-            "started_at": utc_now(),
+            "started_at": _utc_now(),
             "repos": {},
         }
 
-    def _load_state(self):
-        if not self.state_file.exists():
-            return self._default_state()
-
-        try:
-            with self.state_file.open("r", encoding="utf-8") as handle:
-                state = json.load(handle)
-            if isinstance(state, dict) and isinstance(state.get("repos", {}), dict):
-                return state
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        self._log_event("state", "_service", result="failed", reason="state file unreadable")
-        return self._default_state()
-
     def _save_state(self):
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with self.state_file.open("w", encoding="utf-8") as handle:
-            json.dump(self.state, handle, indent=2, sort_keys=True)
+        with open(self.state_file, "w") as f:
+            json.dump(self.state, f, indent=2)
 
     def _log_event(self, action, repo, **fields):
-        record = {"ts": utc_now(), "action": action, "repo": repo, **fields}
-        with self.log_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+        record = {"ts": _utc_now(), "action": action, "repo": repo, **fields}
+        with open(self.log_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
-    def _repo_path(self, repo_name: str) -> Path:
+    def _repo_path(self, repo_name):
         return self.repos_path / f"{repo_name}.git"
 
-    def _origin_url(self, repo_name: str) -> str:
+    def _run_git(self, args, env_extra=None):
+        env = os.environ.copy()
+        env.update(self._git_auth_env())
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(args, capture_output=True, text=True, timeout=self.sync_timeout_seconds, env=env)
+
+    def _repo_url(self, repo_name):
         return f"{self.gitea_url}/{repo_name}.git"
 
-    def _run_git(self, args):
-        try:
-            return subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=self.sync_timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr_output = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            stdout_output = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            return subprocess.CompletedProcess(
-                args=args,
-                returncode=124,
-                stdout=stdout_output,
-                stderr=stderr_output + "\ngit command timed out",
-            )
+    def _ensure_askpass_script(self):
+        if not self.gitea_token:
+            return ""
 
-    def sync_repo(self, repo_name: str) -> bool:
+        tmp_dir = Path(tempfile.gettempdir())
+        script_path = tmp_dir / "git-sync-askpass.sh"
+        script_path.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  *Username*) printf '%s\\n' \"${GIT_ASKPASS_USERNAME}\" ;;\n"
+            "  *) printf '%s\\n' \"${GIT_ASKPASS_PASSWORD}\" ;;\n"
+            "esac\n"
+        )
+        script_path.chmod(0o700)
+        return str(script_path)
+
+    def _git_auth_env(self):
+        if not self.gitea_token or not self.askpass_script:
+            return {}
+
+        return {
+            "GIT_ASKPASS": self.askpass_script,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS_USERNAME": self.gitea_username,
+            "GIT_ASKPASS_PASSWORD": self.gitea_token,
+        }
+
+    def sync_repo(self, repo_name):
         repo_path = self._repo_path(repo_name)
-        repo_path.parent.mkdir(parents=True, exist_ok=True)
-        origin = self._origin_url(repo_name)
-
+        origin = self._repo_url(repo_name)
         if repo_path.exists():
+            # Update remote URL in case token changed, then fetch.
             self._run_git(["git", "-C", str(repo_path), "remote", "set-url", "origin", origin])
-            result = self._run_git(
-                ["git", "-C", str(repo_path), "fetch", "--prune", "--prune-tags", "--force", "origin"]
-            )
+            result = self._run_git(["git", "-C", str(repo_path), "fetch", "--mirror"])
             action = "fetch"
         else:
+            repo_path.parent.mkdir(parents=True, exist_ok=True)
             result = self._run_git(["git", "clone", "--mirror", origin, str(repo_path)])
             action = "clone"
 
@@ -142,16 +125,16 @@ class GitSyncService:
             action,
             repo_name,
             result="success" if success else "failed",
-            stderr=(result.stderr or "")[-1024:],
+            stderr=(result.stderr or "")[-512:],
         )
         return success
 
-    def archive_repo(self, repo_name: str) -> str:
+    def archive_repo(self, repo_name):
         repo_path = self._repo_path(repo_name)
         if not repo_path.exists():
             return ""
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d-%H-%M-%S")
         archive_path = self.archive_path / f"{repo_name}.git.{timestamp}"
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         repo_path.rename(archive_path)
@@ -166,37 +149,124 @@ class GitSyncService:
 
         if action == "deleted":
             archived_to = self.archive_repo(repo_name)
-            with self._state_lock:
-                self.state["repos"][repo_name] = {
-                    "status": "deleted",
-                    "deleted_at": utc_now(),
-                    "archived_to": archived_to,
-                }
-                self._save_state()
+            self.state["repos"][repo_name] = {
+                "status": "deleted",
+                "deleted_at": _utc_now(),
+                "archived_to": archived_to,
+            }
+            self._save_state()
             return True, "archived"
 
         if action == "created" or payload.get("ref"):
-            if not self.sync_repo(repo_name):
+            synced = self.sync_repo(repo_name)
+            if not synced:
                 return False, "git sync failed"
 
-            with self._state_lock:
-                previous = self.state["repos"].get(repo_name, {})
-                self.state["repos"][repo_name] = {
-                    "status": "active",
-                    "last_synced": utc_now(),
-                    "sync_count": int(previous.get("sync_count", 0)) + 1,
-                }
-                self._save_state()
+            previous = self.state["repos"].get(repo_name, {})
+            self.state["repos"][repo_name] = {
+                "status": "active",
+                "last_synced": _utc_now(),
+                "sync_count": int(previous.get("sync_count", 0)) + 1,
+            }
+            self._save_state()
             return True, "synced"
 
         return True, "ignored"
 
+    def sync_all(self):
+        """Enumerate all repos via Gitea API and clone/fetch each one."""
+        if not self.gitea_token:
+            return {"error": "GITEA_TOKEN not configured"}, 0, 0, 0
+
+        headers = {"Authorization": f"token {self.gitea_token}"}
+        api_base = f"{self.gitea_url}/api/v1"
+        page = 1
+        limit = 50
+        cloned = 0
+        updated = 0
+        failed = 0
+
+        while True:
+            try:
+                resp = requests.get(
+                    f"{api_base}/repos/search",
+                    params={"limit": limit, "page": page},
+                    headers=headers,
+                    timeout=30,
+                )
+                if resp.status_code != 200:
+                    return {"error": f"Gitea API returned {resp.status_code}"}, cloned, updated, failed
+                payload = resp.json()
+            except Exception as exc:
+                return {"error": str(exc)}, cloned, updated, failed
+
+            repos = payload.get("data", [])
+            if not repos:
+                break
+
+            for repo in repos:
+                full_name = repo.get("full_name")
+                if not full_name:
+                    continue
+                repo_path = self._repo_path(full_name)
+                existed = repo_path.exists()
+                success = self.sync_repo(full_name)
+                if success:
+                    if existed:
+                        updated += 1
+                    else:
+                        cloned += 1
+                    self.state["repos"][full_name] = {
+                        "status": "active",
+                        "last_synced": _utc_now(),
+                        "sync_count": int(self.state.get("repos", {}).get(full_name, {}).get("sync_count", 0)) + 1,
+                    }
+                else:
+                    failed += 1
+
+            if len(repos) < limit:
+                break
+            page += 1
+
+        self._save_state()
+        return None, cloned, updated, failed
+
+    def restore_from_path(self, source_path):
+        """Restore repositories from a local or mounted path using rsync."""
+        source = source_path.rstrip("/") + "/"
+        dest = str(self.repos_path) + "/"
+
+        result = subprocess.run(
+            ["rsync", "-av", "--delete", source, dest],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            return False, result.stderr[-512:]
+
+        # Rebuild state from restored repos.
+        restored = 0
+        for owner_dir in self.repos_path.iterdir():
+            if not owner_dir.is_dir():
+                continue
+            for repo_dir in owner_dir.iterdir():
+                if repo_dir.is_dir() and repo_dir.name.endswith(".git"):
+                    repo_name = f"{owner_dir.name}/{repo_dir.name[:-4]}"
+                    self.state["repos"][repo_name] = {
+                        "status": "active",
+                        "last_synced": _utc_now(),
+                        "sync_count": int(self.state.get("repos", {}).get(repo_name, {}).get("sync_count", 0)) + 1,
+                    }
+                    restored += 1
+
+        self._save_state()
+        return True, restored
+
     def cleanup_old_archives(self):
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.archive_retention_days)
+        cutoff = datetime.utcnow() - timedelta(days=self.archive_retention_days)
         for archive in self.archive_path.rglob("*.git.*"):
             timestamp = archive.name.rsplit(".", 1)[-1]
             try:
-                archive_time = datetime.strptime(timestamp, "%Y-%m-%d-%H-%M-%S").replace(tzinfo=timezone.utc)
+                archive_time = datetime.strptime(timestamp, "%Y-%m-%d-%H-%M-%S")
             except ValueError:
                 continue
 
@@ -208,13 +278,9 @@ class GitSyncService:
             else:
                 archive.unlink(missing_ok=True)
 
-            self._log_event(
-                "cleanup",
-                str(archive.relative_to(self.archive_path)),
-                age_days=(datetime.now(timezone.utc) - archive_time).days,
-            )
+            self._log_event("cleanup", str(archive.relative_to(self.archive_path)), age_days=(datetime.utcnow() - archive_time).days)
 
-    def register_with_relay(self) -> bool:
+    def register_with_relay(self):
         if not self.relay_url or not self.self_endpoint:
             return False
 
@@ -223,14 +289,10 @@ class GitSyncService:
             "service_id": self.service_id,
             "node_name": self.node_name,
         }
-        headers = {}
-        if self.relay_registration_token:
-            headers["X-Relay-Token"] = self.relay_registration_token
-
         try:
-            response = requests.post(f"{self.relay_url}/register", json=payload, headers=headers, timeout=5)
-            return response.status_code == 200
-        except requests.RequestException:
+            resp = requests.post(f"{self.relay_url}/register", json=payload, timeout=5)
+            return resp.status_code == 200
+        except Exception:
             return False
 
     def start_registration_loop(self):
@@ -252,28 +314,17 @@ class GitSyncService:
         return {
             "service_id": self.service_id,
             "node_name": self.node_name,
-            "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+            "started_at": datetime.fromtimestamp(self.started_at).isoformat() + "Z",
             "uptime_seconds": int(time.time() - self.started_at),
             "relay_registration_enabled": bool(self.relay_url and self.self_endpoint),
             "repos": {"active": active, "deleted": deleted},
         }
 
     def get_logs(self, lines=100):
-        line_count = max(1, min(lines, 1000))
         if not self.log_file.exists():
             return []
-        with self.log_file.open("r", encoding="utf-8") as handle:
-            rows = handle.readlines()[-line_count:]
-        records = []
-        for row in rows:
-            row = row.strip()
-            if not row:
-                continue
-            try:
-                records.append(json.loads(row))
-            except json.JSONDecodeError:
-                continue
-        return records
+        with open(self.log_file) as f:
+            return [json.loads(line) for line in f.readlines()[-lines:]]
 
 
 app = Flask(__name__)
@@ -281,33 +332,55 @@ service = GitSyncService()
 
 
 @app.route("/sync", methods=["POST"])
-def sync_endpoint():
-    payload = request.get_json(silent=True)
-    if payload is None:
-        return jsonify({"error": "missing json payload"}), 400
-    ok, message = service.handle_webhook(payload)
+def sync():
+    payload = request.get_json(silent=True) or {}
+    ok, msg = service.handle_webhook(payload)
     if not ok:
-        return jsonify({"error": message}), 400
-    return jsonify({"result": message}), 200
+        return jsonify({"error": msg}), 400
+    return jsonify({"result": msg}), 200
+
+
+@app.route("/sync-all", methods=["POST"])
+def sync_all():
+    error, cloned, updated, failed = service.sync_all()
+    status_code = 200 if error is None else 500
+    return jsonify({
+        "cloned": cloned,
+        "updated": updated,
+        "failed": failed,
+        **({"error": error} if error else {}),
+    }), status_code
+
+
+@app.route("/restore", methods=["POST"])
+def restore():
+    payload = request.get_json(silent=True) or {}
+    source = payload.get("source", "").strip()
+    if not source:
+        return jsonify({"error": "source path is required"}), 400
+    ok, result = service.restore_from_path(source)
+    if not ok:
+        return jsonify({"error": "rsync failed", "stderr": result}), 500
+    return jsonify({"restored": result}), 200
 
 
 @app.route("/health", methods=["GET"])
-def health_endpoint():
+def health():
     return jsonify(service.get_health()), 200
 
 
 @app.route("/repos", methods=["GET"])
-def repos_endpoint():
+def repos():
     return jsonify(service.state.get("repos", {})), 200
 
 
 @app.route("/logs", methods=["GET"])
-def logs_endpoint():
-    lines = parse_int(request.args.get("lines", "100"), default=100, minimum=1)
+def logs():
+    lines = int(request.args.get("lines", "100"))
     return jsonify({"logs": service.get_logs(lines)}), 200
 
 
 if __name__ == "__main__":
     service.cleanup_old_archives()
     service.start_registration_loop()
-    app.run(host="0.0.0.0", port=parse_int_env("PORT", 8080))
+    app.run(host="0.0.0.0", port=8080)
