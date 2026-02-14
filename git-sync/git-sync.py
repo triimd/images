@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 import threading
 import time
 import tempfile
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, after_this_request, jsonify, request, send_file
 
 
 def _utc_now():
@@ -326,6 +327,18 @@ class GitSyncService:
         with open(self.log_file) as f:
             return [json.loads(line) for line in f.readlines()[-lines:]]
 
+    def create_snapshot_archive(self):
+        if not self.repos_path.exists():
+            raise RuntimeError("repositories path does not exist")
+        if not any(self.repos_path.iterdir()):
+            raise RuntimeError("repositories path is empty")
+
+        fd, archive_path = tempfile.mkstemp(prefix="git-sync-snapshot-", suffix=".tar.gz")
+        os.close(fd)
+        with tarfile.open(archive_path, mode="w:gz") as tar:
+            tar.add(self.repos_path, arcname="repositories")
+        return archive_path
+
 
 app = Flask(__name__)
 service = GitSyncService()
@@ -378,6 +391,29 @@ def repos():
 def logs():
     lines = int(request.args.get("lines", "100"))
     return jsonify({"logs": service.get_logs(lines)}), 200
+
+
+@app.route("/snapshot", methods=["GET"])
+def snapshot():
+    try:
+        archive_path = service.create_snapshot_archive()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    @after_this_request
+    def _cleanup_archive(response):
+        try:
+            os.unlink(archive_path)
+        except OSError:
+            pass
+        return response
+
+    return send_file(
+        archive_path,
+        as_attachment=True,
+        download_name="repositories.tar.gz",
+        mimetype="application/gzip",
+    )
 
 
 if __name__ == "__main__":
