@@ -114,8 +114,14 @@ class GitSyncService:
         if repo_path.exists():
             # Update remote URL in case token changed, then fetch.
             self._run_git(["git", "-C", str(repo_path), "remote", "set-url", "origin", origin])
-            result = self._run_git(["git", "-C", str(repo_path), "fetch", "--mirror"])
+            result = self._run_git(["git", "-C", str(repo_path), "remote", "update", "--prune"])
             action = "fetch"
+
+            if result.returncode != 0:
+                archived_to = self.archive_repo(repo_name)
+                self._log_event("reclone", repo_name, archived_to=archived_to)
+                result = self._run_git(["git", "clone", "--mirror", origin, str(repo_path)])
+                action = "reclone"
         else:
             repo_path.parent.mkdir(parents=True, exist_ok=True)
             result = self._run_git(["git", "clone", "--mirror", origin, str(repo_path)])
