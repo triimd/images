@@ -1,6 +1,7 @@
+FROM dxflrs/garage:v2.2.0 AS garage
+
 FROM alpine:3.23
 
-ARG GARAGE_VERSION=v2.2.0
 ARG KUBECTL_VERSION=v1.35.0
 
 RUN apk add --no-cache \
@@ -11,9 +12,7 @@ RUN apk add --no-cache \
     python3 \
     tar
 
-RUN curl -fsSL "https://releases.garage.deuxfleurs.fr/${GARAGE_VERSION}/garage-${GARAGE_VERSION}-linux-amd64" \
-    -o /usr/local/bin/garage && \
-  chmod +x /usr/local/bin/garage
+COPY --from=garage /garage /usr/local/bin/garage
 
 RUN curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
     -o /usr/local/bin/kubectl && \
