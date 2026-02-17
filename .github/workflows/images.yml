@@ -14,6 +14,7 @@ on:
           - job-image
           - git-sync
           - git-relay
+          - garage-setup
           - bootstrap
 
 permissions:
