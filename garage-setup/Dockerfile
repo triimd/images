@@ -1,22 +1,35 @@
+FROM dxflrs/garage:v2.2.0 AS garage
 FROM alpine:3.23
 
-ARG GARAGE_VERSION=v2.2.0
 ARG KUBECTL_VERSION=v1.35.0
+ARG TARGETARCH
 
+# Install minimal runtime deps
 RUN apk add --no-cache \
-    bash \
     ca-certificates \
     curl \
-    jq \
-    python3 \
-    tar
+    bash \
+ && update-ca-certificates
 
-RUN curl -fsSL "https://releases.garage.deuxfleurs.fr/${GARAGE_VERSION}/garage-${GARAGE_VERSION}-linux-amd64" \
-    -o /usr/local/bin/garage && \
-  chmod +x /usr/local/bin/garage
+# Install kubectl (multi-arch aware)
+RUN curl -fsSLO \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+ && curl -fsSLO \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" \
+ && echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c - \
+ && install -m 0755 kubectl /usr/local/bin/kubectl \
+ && rm kubectl kubectl.sha256
 
-RUN curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
-    -o /usr/local/bin/kubectl && \
-  chmod +x /usr/local/bin/kubectl
+# Copy garage binary from official image
+COPY --from=garage /garage /usr/local/bin/garage
 
-WORKDIR /usr/local/bin
+# Create non-root user
+RUN adduser -D -H -s /sbin/nologin appuser \
+ && chown appuser:appuser /usr/local/bin/garage /usr/local/bin/kubectl
+
+USER appuser
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/bin/bash"]
+
