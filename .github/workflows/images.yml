@@ -8,14 +8,11 @@ on:
         required: true
         type: choice
         options:
-          - infra-tools
-          - dev-node
-          - dev-python
-          - job-image
-          - git-sync
-          - git-relay
-          - garage-setup
-          - bootstrap
+      - infra-tools
+      - dev-node
+      - dev-python
+      - bootstrap
+      - kube-python
 
 permissions:
   contents: read

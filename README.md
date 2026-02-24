@@ -11,10 +11,8 @@ The legacy `base-debian` image is intentionally retired; `infra-tools` is the sh
 | `infra-tools` | Ubuntu base for workflow tooling and CI containers | `<registry>/<namespace>/infra-tools` |
 | `dev-node` | Node.js development image built on `infra-tools` | `<registry>/<namespace>/dev-node` |
 | `dev-python` | Python development image with Poetry built on `infra-tools` | `<registry>/<namespace>/dev-python` |
-| `job-image` | Lightweight Node-based runtime image for jobs | `<registry>/<namespace>/job-image` |
-| `git-sync` | Webhook-driven bare-mirror sync service | `<registry>/<namespace>/git-sync` |
-| `git-relay` | Webhook fanout service for `git-sync` instances | `<registry>/<namespace>/git-relay` |
 | `bootstrap` | Bootstrap utility image for initialization flows | `<registry>/<namespace>/bootstrap` |
+| `kube-python` | Lightweight Python image with Kubernetes tooling | `<registry>/<namespace>/kube-python` |
 
 ## Build and Release Workflow
 
@@ -53,10 +51,8 @@ For release tags, the workflow publishes:
 docker build -t infra-tools:local ./infra-tools
 docker build -t dev-node:local --build-arg BASE_IMAGE=infra-tools:local ./dev-node
 docker build -t dev-python:local --build-arg BASE_IMAGE=infra-tools:local ./dev-python
-docker build -t job-image:local ./job-image
-docker build -t git-sync:local ./git-sync
-docker build -t git-relay:local ./git-relay
 docker build -t bootstrap:local ./bootstrap
+docker build -t kube-python:local ./kube-python
 ```
 
 ## Repository Structure
@@ -66,10 +62,8 @@ docker build -t bootstrap:local ./bootstrap
 ├── infra-tools/
 ├── dev-node/
 ├── dev-python/
-├── job-image/
-├── git-sync/
-├── git-relay/
 ├── bootstrap/
+├── kube-python/
 └── .github/workflows/images.yml
 ```
 
