@@ -8,11 +8,11 @@ on:
         required: true
         type: choice
         options:
-      - infra-tools
-      - dev-node
-      - dev-python
-      - bootstrap
-      - kube-python
+          - infra-tools
+          - dev-node
+          - dev-python
+          - bootstrap
+          - kube-python
 
 permissions:
   contents: read
